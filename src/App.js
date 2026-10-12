@@ -2,18 +2,18 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
 import { apiPost } from './api';
 import { bacaSalinan, simpanSalinan, tarikInit, cekVersi } from './awal';
-import { bacaHash, halamanTerakhir, pindah, gantiTanpaRiwayat, dengarkan } from './navigasi';
-import { prefBaca, prefTulis, prefHapus } from './utils/pref';
-import { modulById } from './utils/data';
-import { STORAGE_KEY } from './config';
+import { bacaHash, halamanTerakhir, pindah as pindahHash, gantiTanpaRiwayat, dengarkan } from './navigasi';
+import { modulById, fPeran, formatTanggal } from './utils/data';
 import MenuTitik from './components/MenuTitik';
 import Toast from './components/Toast';
 import Diagnosa from './components/Diagnosa';
-import Form from './components/Form';
-import PetaAlur from './pages/PetaAlur';
-import HalamanTabel, { kunciLebar } from './pages/HalamanTabel';
+import Panduan from './components/Panduan';
+import Ringkasan from './pages/Ringkasan';
+import AlurTahap from './pages/AlurTahap';
+import Bertentangan from './pages/Bertentangan';
+import MintaLPPM from './pages/MintaLPPM';
 
-const KUNCI_CIUT = STORAGE_KEY + '.sidebarCiut';
+const HALAMAN = { ringkasan: Ringkasan, alur: AlurTahap, bertentangan: Bertentangan, minta: MintaLPPM };
 
 function jam() {
   return new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
@@ -24,13 +24,9 @@ export default function App() {
   const [muat, setMuat] = useState({ status: 'awal', pesan: '' });
   const [sinkron, setSinkron] = useState('');
   const [halaman, setHalaman] = useState(() => bacaHash() || halamanTerakhir());
-  const [modeBaca, setModeBaca] = useState(false);
-  const [ciut, setCiut] = useState(() => prefBaca(KUNCI_CIUT, false));
-  const [drawer, setDrawer] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [diagnosa, setDiagnosa] = useState(false);
-  const [form, setForm] = useState(null);
-  const [versiLebar, setVersiLebar] = useState(0);
+  const [panduan, setPanduan] = useState(false);
   const paketRef = useRef(null);
 
   const tambahToast = useCallback((pesan, jenis) => {
@@ -74,7 +70,6 @@ export default function App() {
     }
   }, [tarik]);
 
-  // Muat awal: tampilkan salinan perangkat seketika, lalu cek versi.
   useEffect(() => {
     let batal = false;
     (async () => {
@@ -100,32 +95,31 @@ export default function App() {
 
   useEffect(() => dengarkan((id) => setHalaman(id)), []);
 
-  // Halaman tidak dikenal atau kosong → halaman terakhir / modul pertama.
+  const menu = paket ? (paket.modul || []).filter((m) => m.menu && HALAMAN[m.tipe]) : [];
+
+  // Halaman tidak dikenal → halaman terakhir, lalu modul_awal, lalu menu pertama.
   useEffect(() => {
-    if (!paket || !paket.modul || !paket.modul.length) return;
-    if (!modulById(paket, halaman)) {
-      const cadangan = modulById(paket, halamanTerakhir()) ? halamanTerakhir() : paket.modul[0].id;
-      gantiTanpaRiwayat(cadangan);
-      setHalaman(cadangan);
+    if (!paket || !menu.length) return;
+    if (!menu.some((m) => m.id === halaman)) {
+      const awal = (paket.app || {}).modul_awal;
+      const terakhir = halamanTerakhir();
+      const tuju = menu.some((m) => m.id === terakhir) ? terakhir : menu.some((m) => m.id === awal) ? awal : menu[0].id;
+      gantiTanpaRiwayat(tuju);
+      setHalaman(tuju);
     }
-  }, [paket, halaman]);
+  }, [paket, halaman, menu]);
 
   useEffect(() => {
     if (paket && paket.app && paket.app.nama_aplikasi) document.title = paket.app.nama_aplikasi;
   }, [paket]);
 
-  const buka = (id) => {
-    pindah(id);
+  const pindah = (id) => {
+    pindahHash(id);
     setHalaman(id);
-    setDrawer(false);
     window.scrollTo(0, 0);
   };
 
-  const ubahPaket = (fn) => {
-    const p = fn(paketRef.current);
-    terapkan(p, true);
-  };
-
+  const ubahPaket = (fn) => terapkan(fn(paketRef.current), true);
   const patchBaris = (idModul, id, nilai, versi) =>
     ubahPaket((p) => ({
       ...p,
@@ -133,27 +127,20 @@ export default function App() {
       data: { ...p.data, [idModul]: (p.data[idModul] || []).map((r) => (r.ID === id ? { ...r, ...nilai } : r)) },
     }));
 
-  const simpanField = (idModul, id, header, v) => {
-    const lama = ((paketRef.current.data[idModul] || []).find((r) => r.ID === id) || {})[header];
-    patchBaris(idModul, id, { [header]: v });
-    return apiPost('update', { modul: idModul, id, perubahan: { [header]: v } })
-      .then((d) => patchBaris(idModul, id, d.nilai, d.versi))
+  // Simpan satu field menurut perannya (status, periksa, …): tampil dulu, dikembalikan bila ditolak.
+  const simpan = (modul, row, peran, nilai) => {
+    const f = fPeran(paketRef.current, modul.id, peran);
+    if (!f) return Promise.reject(new Error('Kolom untuk "' + peran + '" tidak ada di Cfg_Field.'));
+    const lama = row[f.header];
+    patchBaris(modul.id, row.ID, { [f.header]: nilai });
+    return apiPost('update', { modul: modul.id, id: row.ID, perubahan: { [f.header]: nilai } })
+      .then((d) => patchBaris(modul.id, row.ID, d.nilai, d.versi))
       .catch((e) => {
-        patchBaris(idModul, id, { [header]: lama });
+        patchBaris(modul.id, row.ID, { [f.header]: lama });
         tambahToast(e.message, 'galat');
         throw e;
       });
   };
-
-  const tambahData = (idModul, nilai) =>
-    apiPost('create', { modul: idModul, nilai }).then((d) =>
-      ubahPaket((p) => ({ ...p, versi: d.versi || p.versi, data: { ...p.data, [idModul]: [...(p.data[idModul] || []), d.baris] } }))
-    );
-
-  const arsipData = (idModul, id) =>
-    apiPost('archive', { modul: idModul, id }).then((d) =>
-      ubahPaket((p) => ({ ...p, versi: d.versi || p.versi, data: { ...p.data, [idModul]: (p.data[idModul] || []).filter((r) => r.ID !== id) } }))
-    );
 
   if (!paket) {
     return (
@@ -163,12 +150,8 @@ export default function App() {
             <h1>Data belum dapat dimuat</h1>
             <p>{muat.pesan}</p>
             <div className="baris-tombol">
-              <button type="button" className="tombol tombol-utama" onClick={() => tarik(true)}>
-                Coba lagi
-              </button>
-              <button type="button" className="tombol" onClick={() => setDiagnosa(true)}>
-                Diagnosa
-              </button>
+              <button type="button" className="tombol tombol-utama" onClick={() => tarik(true)}>Coba lagi</button>
+              <button type="button" className="tombol" onClick={() => setDiagnosa(true)}>Diagnosa</button>
             </div>
           </div>
         ) : (
@@ -179,107 +162,61 @@ export default function App() {
     );
   }
 
-  const modul = modulById(paket, halaman) || paket.modul[0];
   const app = paket.app || {};
-  const modulForm = form && modulById(paket, form.modul);
-  const rowForm = form && form.id ? (paket.data[form.modul] || []).find((r) => r.ID === form.id) : null;
+  const modul = modulById(paket, halaman);
+  const Halaman = modul && HALAMAN[modul.tipe];
 
   return (
-    <div className={'kerangka' + (ciut ? ' sidebar-ciut' : '') + (drawer ? ' drawer-buka' : '')}>
-      <aside className="sidebar" aria-label="Navigasi">
-        <div className="sidebar-kepala">
-          <div className="merek">
-            <span className="merek-nama">{app.nama_aplikasi}</span>
-            {app.organisasi && <span className="merek-org">{app.organisasi}</span>}
-          </div>
-          <button
-            type="button"
-            className="tombol-ikon tombol-ciut"
-            onClick={() => {
-              setCiut(!ciut);
-              prefTulis(KUNCI_CIUT, !ciut);
-            }}
-            aria-label={ciut ? 'Lebarkan sidebar' : 'Ciutkan sidebar'}
-          >
-            {ciut ? '»' : '«'}
-          </button>
-        </div>
-        <nav>
-          {paket.modul.map((m) => (
-            <button
-              type="button"
-              key={m.id}
-              className={'nav-item' + (m.id === modul.id ? ' aktif' : '')}
-              onClick={() => buka(m.id)}
-              title={m.nama}
-              aria-current={m.id === modul.id ? 'page' : undefined}
-            >
-              <span className="nav-huruf" aria-hidden="true">
-                {String(m.nama).charAt(0)}
+    <div className="kerangka">
+      <header className="bilah">
+        <div className="bilah-isi">
+          <span className="merek">{app.nama_aplikasi}</span>
+          <nav className="tab" aria-label="Menu utama">
+            {menu.map((m) => (
+              <button
+                type="button"
+                key={m.id}
+                className={'tab-item' + (modul && m.id === modul.id ? ' tab-aktif' : '')}
+                aria-current={modul && m.id === modul.id ? 'page' : undefined}
+                onClick={() => pindah(m.id)}
+              >
+                {m.nama}
+              </button>
+            ))}
+          </nav>
+          <span className="bilah-kanan">
+            {(app.status_naskah || app.tanggal_kajian) && (
+              <span className="draf">
+                {app.tanggal_kajian ? 'Kajian ' + formatTanggal(paket, app.tanggal_kajian) : ''}
+                {app.tanggal_kajian && app.status_naskah ? ' · ' : ''}
+                {app.status_naskah && <b>{app.status_naskah}</b>}
               </span>
-              <span className="nav-nama">{m.nama}</span>
-              <span className="nav-jumlah">{(paket.data[m.id] || []).length}</span>
-            </button>
-          ))}
-        </nav>
-      </aside>
-      <div className="drawer-latar" onClick={() => setDrawer(false)} aria-hidden="true" />
-
-      <div className="utama">
-        <div className="bilah-atas">
-          <button type="button" className="tombol-ikon tombol-drawer" onClick={() => setDrawer(true)} aria-label="Buka navigasi">
-            ☰
-          </button>
-          <span className="bilah-judul">{modul.nama}</span>
-          {modeBaca && <span className="chip-mode">Mode baca</span>}
-          <span className="bilah-status">{sinkron === 'memuat' ? 'Memuat…' : sinkron}</span>
-          <MenuTitik
-            item={[
-              { label: 'Refresh data', aksi: () => tarik(true) },
-              { label: modeBaca ? 'Kembali ke Mode kerja' : 'Masuk Mode baca', aksi: () => setModeBaca(!modeBaca) },
-              modul.tipe !== 'peta' && {
-                label: 'Reset lebar kolom',
-                aksi: () => {
-                  prefHapus(kunciLebar(modul.id));
-                  setVersiLebar((v) => v + 1);
-                },
-              },
-              { label: 'Diagnosa', aksi: () => setDiagnosa(true) },
-            ]}
-          />
-        </div>
-
-        <main className="isi">
-          {modul.tipe === 'peta' ? (
-            <PetaAlur paket={paket} modul={modul} modeBaca={modeBaca} onBuka={(m, r) => setForm({ modul: m.id, id: r.ID })} />
-          ) : (
-            <HalamanTabel
-              key={modul.id + '-' + versiLebar}
-              paket={paket}
-              modul={modul}
-              modeBaca={modeBaca}
-              onBuka={(m, r) => setForm({ modul: m.id, id: r.ID })}
-              onTambah={() => setForm({ modul: modul.id, id: null })}
+            )}
+            {sinkron === 'memuat' && <span className="sinkron">Memuat…</span>}
+            <MenuTitik
+              item={[
+                { label: 'Refresh data', aksi: () => tarik(true) },
+                { label: 'Cara memperbarui', aksi: () => setPanduan(true) },
+                { label: 'Diagnosa', aksi: () => setDiagnosa(true) },
+              ]}
             />
-          )}
-          {app.sumber_data && <footer className="kaki">Sumber data awal: {app.sumber_data}</footer>}
-        </main>
-      </div>
+          </span>
+        </div>
+      </header>
 
-      {modulForm && (form.id === null || rowForm) && (
-        <Form
-          key={form.modul + '-' + (form.id || 'baru')}
-          paket={paket}
-          modul={modulForm}
-          row={rowForm}
-          modeBaca={modeBaca}
-          jeda={Number(app.jeda_simpan_ms) || 800}
-          onSimpanField={(h, v) => simpanField(form.modul, form.id, h, v)}
-          onTambah={(n) => tambahData(form.modul, n)}
-          onArsip={() => arsipData(form.modul, form.id)}
-          onTutup={() => setForm(null)}
-        />
-      )}
+      <main className="isi">
+        {menu.length === 0 ? (
+          <div className="kotak-galat">
+            <h1>Menu belum tersedia</h1>
+            <p>Data di Sheet belum disesuaikan untuk versi web ini. Jalankan skrip revisi data v1.1.0 (lihat PANDUAN), lalu menu ⋯ › Refresh data.</p>
+          </div>
+        ) : Halaman ? (
+          <Halaman paket={paket} modul={modul} pindah={pindah} simpan={simpan} />
+        ) : null}
+        {sinkron && sinkron !== 'memuat' && <footer className="kaki">{sinkron}</footer>}
+      </main>
+
+      {panduan && <Panduan paket={paket} onTutup={() => setPanduan(false)} />}
       {diagnosa && <Diagnosa paket={paket} onTutup={() => setDiagnosa(false)} />}
       <Toast daftar={toasts} onTutup={(id) => setToasts((t) => t.filter((x) => x.id !== id))} />
     </div>

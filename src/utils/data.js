@@ -94,3 +94,107 @@ export function teksNilai(paket, field, nilai) {
 export function benar(v) {
   return v === true || norm(v) === 'true';
 }
+
+// ---------- v1.1.0: pembacaan berbasis peran (kolom Peran di Cfg_Field) ----------
+const urutF = (a, b) => a.urutan - b.urutan;
+
+export function modulTipe(paket, tipe) {
+  return (paket.modul || []).find((m) => m.tipe === tipe) || null;
+}
+
+export function fPeran(paket, idModul, peran) {
+  return (paket.field || []).filter((f) => f.modul === idModul && f.peran === peran).sort(urutF)[0] || null;
+}
+
+export function fsPeran(paket, idModul, peran) {
+  return (paket.field || []).filter((f) => f.modul === idModul && f.peran === peran).sort(urutF);
+}
+
+export function vp(paket, modul, row, peran) {
+  if (!modul || !row) return '';
+  const f = fPeran(paket, modul.id, peran);
+  return f ? row[f.header] : '';
+}
+
+export function baris(paket, modul) {
+  if (!modul) return [];
+  const rows = [...((paket.data || {})[modul.id] || [])];
+  const f = fPeran(paket, modul.id, 'urutan') || fPeran(paket, modul.id, 'tahun');
+  if (f) rows.sort((a, b) => (Number(a[f.header]) || 0) - (Number(b[f.header]) || 0));
+  return rows;
+}
+
+export function opsiNilai(paket, field, nilai) {
+  return field ? cariOpsi(paket, field.sumber, nilai) : null;
+}
+
+export function warnaNilai(paket, field, nilai) {
+  const o = opsiNilai(paket, field, nilai);
+  return o ? o.warna || 'abu' : 'abu';
+}
+
+export function labelNilai(paket, field, nilai) {
+  const o = opsiNilai(paket, field, nilai);
+  return o ? o.label : String(nilai === null || nilai === undefined ? '' : nilai);
+}
+
+export function warnaStatus(paket, modul, row) {
+  if (!modul) return 'abu';
+  return warnaNilai(paket, fPeran(paket, modul.id, 'status'), vp(paket, modul, row, 'status'));
+}
+
+// Status berwarna hijau di Cfg_Opsi = sudah beres/siap.
+export function beres(paket, modul, row) {
+  return warnaStatus(paket, modul, row) === 'hijau';
+}
+
+export function terkaitTahap(paket, modulItem, modulTahap, idTahap) {
+  if (!modulItem || !modulTahap) return [];
+  const rel = fieldModul(paket, modulItem.id).find(
+    (f) => (f.tipe === 'relasi' || f.tipe === 'multirelasi') && modulSumber(f) === modulTahap.id
+  );
+  if (!rel) return [];
+  return baris(paket, modulItem).filter((r) =>
+    rel.tipe === 'multirelasi' ? pecah(r[rel.header]).some((x) => norm(x) === norm(idTahap)) : norm(r[rel.header]) === norm(idTahap)
+  );
+}
+
+export function hariIni() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
+export function fmtRp(v) {
+  const n = Number(v);
+  if (v === '' || v === null || v === undefined || isNaN(n)) return String(v === null || v === undefined ? '' : v);
+  if (Math.abs(n) >= 1e6) return 'Rp' + (n / 1e6).toLocaleString('id-ID', { maximumFractionDigits: 1 }) + ' jt';
+  if (Math.abs(n) >= 1e3) return 'Rp' + (n / 1e3).toLocaleString('id-ID', { maximumFractionDigits: 1 }) + ' rb';
+  return 'Rp' + n.toLocaleString('id-ID');
+}
+
+export function angka(v) {
+  const n = Number(v);
+  return v === '' || v === null || v === undefined || isNaN(n) ? null : n;
+}
+
+// Tanda ⟳: ada dokumen sumber yang versinya lebih baru daripada tanggal terakhir dicek.
+export function perluCek(paket, modul, row, idSumber) {
+  const mD = modulTipe(paket, 'dokumen');
+  if (!mD || !modul || !row) return false;
+  const fPer = fPeran(paket, modul.id, 'periksa');
+  if (!fPer) return false;
+  const ids = idSumber || pecah(vp(paket, modul, row, 'sumber'));
+  const versi = {};
+  baris(paket, mD).forEach((d) => (versi[d.ID] = String(vp(paket, mD, d, 'versi') || '').slice(0, 10)));
+  const terbaru = ids.map((id) => versi[id]).filter(Boolean).sort().pop();
+  if (!terbaru) return false;
+  const dicek = String(row[fPer.header] || '').slice(0, 10);
+  return !dicek || terbaru > dicek;
+}
+
+export function namaDokumen(paket, id) {
+  const mD = modulTipe(paket, 'dokumen');
+  const d = baris(paket, mD).find((x) => x.ID === id);
+  return d ? vp(paket, mD, d, 'singkat') || vp(paket, mD, d, 'judul') : id;
+}
